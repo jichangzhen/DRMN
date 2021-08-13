@@ -29,8 +29,6 @@ def load_data_dict(file):
 	return data_dict
 
 
-
-
 def tokenid_to_sentenceid(tokenids):
 	tokenids = [x for x in tokenids if x not in (0, 1)]
 	min_eos_index = tokenids.index(2) if 2 in tokenids else -1
@@ -119,7 +117,7 @@ def one_step(session, one_batch, model, version, max_decoder_steps, dropout_keep
 	             model.dropout_keep_prob: dropout_keep_prob,
 	             model.training: train
 	             }
-	return feed_dict, decoder_output_x_batch
+	return feed_dict
 
 def dev_test_step(session, data_set, model, batch_size, max_decoder_steps, version, dropout_keep_prob):
 	num_samples = len(data_set)
@@ -195,12 +193,11 @@ def train(args, data):
 			session.run(tf.global_variables_initializer())
 		
 		saver = tf.train.Saver(tf.trainable_variables(), max_to_keep=args.num_checkpoints)
-		losses = deque([])
-		losses_steps = deque([])
-		
 		train_one_batch = padding_batch(train_data_set, args.num_epochs, args.batch_size)
+		
+		minloss = 99999
 		for batch_id in range(batch_num):
-			feed_dict, decoder_output_x_batch = one_step(session, train_one_batch, model, args.use_copy_version,
+			feed_dict = one_step(session, train_one_batch, model, args.use_copy_version,
 			                                             args.max_decoder_steps, args.dropout_keep_prob, train=True)
 			
 			fetches = [update_ops, train_op, learning_rate, global_step, model.loss, model.decoder_loss,
@@ -215,56 +212,18 @@ def train(args, data):
 			                                                                   np.mean(decoder_loss)))
 			
 			current_step = tf.train.global_step(session, global_step)
-			current_lr = session.run(learning_rate)
 			
 			if current_step % args.evaluate_every == 0:
-				logging.info("Evaluation: batch_no %d, global_step %d, learning_rate %.5f." % (
-					batch_id, current_step, current_lr))
-				
-				logging.info("Train result:")
-				print("Train result:")
-				dev_test_step(session, train_data_set_handout, model, args.batch_size, args.max_decoder_steps,
-				              args.use_copy_version, args.dropout_keep_prob)
-				
-				logging.info("dev result:")
-				print("dev result:")
 				valid_loss, val_dec_loss = dev_test_step(session, valid_data_set, model, args.batch_size,
 				                                         args.max_decoder_steps, args.use_copy_version,
 				                                         args.dropout_keep_prob)
 				
-				logging.info("Test result:")
-				print("Test result:")
-				dev_test_step(session, test_data_set, model, args.batch_size, args.max_decoder_steps,
-				              args.use_copy_version, args.dropout_keep_prob)
-				logging.info("\n")
-				early_stop = False
-				if len(losses) < args.num_checkpoints:
-					losses.append(valid_loss)
-					losses_steps.append(current_step)
-				else:
-					if losses[0] == min(losses):
-						logging.info("early stopping in batch no %d" % batch_id)
-						early_stop = True
-					else:
-						losses.popleft()
-						losses.append(valid_loss)
-						losses_steps.popleft()
-						losses_steps.append(current_step)
+				vloss = valid_loss + val_dec_loss
+				minloss = min(minloss, vloss)
 				
-				if early_stop:
-					print(logging.info("early stop, min valid perplexity is %s." % losses))
-					print(logging.info("early stop, stopped at step %d." % losses_steps[0]))
-					# break
-			
-			if current_step % args.checkpoint_every == 0:
-				path = saver.save(session, checkpoint_prefix, global_step=current_step)
-				print("Saved model checkpoint to {}\n".format(path))
-		
-		logging.info("******************************Final result***************************")
-		print("******************************Final result***************************")
-		dev_test_step(session, test_data_set, model, args.batch_size, args.max_decoder_steps, args.use_copy_version,
-		              args.dropout_keep_prob)
-
+				if minloss == vloss:
+					path = saver.save(session, checkpoint_prefix, global_step=current_step)
+					print("Saved model checkpoint to {}\n".format(path))
 
 def main(argv=None):
 	args = model_opts()
