@@ -1,11 +1,8 @@
 import datetime, os, sys, logging, nltk, pickle
 import tensorflow as tf
 import numpy as np
-import rouge.rouge_score as rouge_score
-from tqdm import tqdm
 from collections import deque
 from sklearn.model_selection import train_test_split
-from nltk.translate.bleu_score import SmoothingFunction
 from mermodel import Model
 from optimization import create_optimizer
 from argparser import model_opts
@@ -32,18 +29,6 @@ def load_data_dict(file):
 	return data_dict
 
 
-def cal_rouge(hyp, ref):
-	rouge_metrics = {
-		"rouge-1": lambda hyp, ref: rouge_score.rouge_n(hyp, ref, 1),
-		"rouge-2": lambda hyp, ref: rouge_score.rouge_n(hyp, ref, 2),
-		"rouge-3": lambda hyp, ref: rouge_score.rouge_n(hyp, ref, 3),
-		"rouge-l": lambda hyp, ref:
-		rouge_score.rouge_l_summary_level(hyp, ref),
-	}
-	scores = {}
-	for k, fn in rouge_metrics.items():
-		scores[k] = fn(hyp, ref)
-	return scores
 
 
 def tokenid_to_sentenceid(tokenids):
@@ -136,60 +121,6 @@ def one_step(session, one_batch, model, version, max_decoder_steps, dropout_keep
 	             }
 	return feed_dict, decoder_output_x_batch
 
-
-def evaluation(predict, groundtruth, mode='train'):
-	bleu_scores1 = []
-	bleu_scores2 = []
-	bleu_scores3 = []
-	bleu_scores4 = []
-	bleu_scores_2 = []
-	bleu_scores_3 = []
-	bleu_scores_4 = []
-	
-	rouge1 = []
-	rouge2 = []
-	rouge3 = []
-	rougel = []
-	if mode == 'train':
-		test_zip = zip(predict.tolist(), groundtruth.tolist())
-	else:
-		test_zip = zip(predict, groundtruth)
-	for p, g in test_zip:
-		gs = tokenid_to_sentenceid(g)
-		ps = tokenid_to_sentenceid(p)
-		gs, ps = list(map(lambda x: str(x), gs)), list(map(lambda x: str(x), ps))
-		score1 = nltk.bleu([gs], ps, weights=(1, 0, 0, 0),
-		                   smoothing_function=SmoothingFunction().method1)
-		score2 = nltk.bleu([gs], ps, weights=(0, 1, 0, 0),
-		                   smoothing_function=SmoothingFunction().method1)
-		score3 = nltk.bleu([gs], ps, weights=(0, 0, 1, 0),
-		                   smoothing_function=SmoothingFunction().method1)
-		score4 = nltk.bleu([gs], ps, weights=(0, 0, 0, 1),
-		                   smoothing_function=SmoothingFunction().method1)
-		score_2 = nltk.bleu([gs], ps, weights=(1 / 2, 1 / 2, 0, 0),
-		                    smoothing_function=SmoothingFunction().method1)
-		score_3 = nltk.bleu([gs], ps, weights=(1 / 3, 1 / 3, 1 / 3, 0),
-		                    smoothing_function=SmoothingFunction().method1)
-		score_4 = nltk.bleu([gs], ps, weights=(1 / 4, 1 / 4, 1 / 4, 1 / 4),
-		                    smoothing_function=SmoothingFunction().method1)
-		
-		bleu_scores1.append(score1)
-		bleu_scores2.append(score2)
-		bleu_scores3.append(score3)
-		bleu_scores4.append(score4)
-		bleu_scores_2.append(score_2)
-		bleu_scores_3.append(score_3)
-		bleu_scores_4.append(score_4)
-		
-		r_scores = cal_rouge([" ".join(ps)], [" ".join(gs)])
-		
-		rouge1.append(r_scores["rouge-1"]["f"])
-		rouge2.append(r_scores["rouge-2"]["f"])
-		rouge3.append(r_scores["rouge-3"]["f"])
-		rougel.append(r_scores["rouge-l"]["f"])
-	return bleu_scores1, bleu_scores2, bleu_scores3, bleu_scores4, bleu_scores_2, bleu_scores_3, bleu_scores_4, rouge1, rouge2, rouge3, rougel
-
-
 def dev_test_step(session, data_set, model, batch_size, max_decoder_steps, version, dropout_keep_prob):
 	num_samples = len(data_set)
 	div = num_samples % batch_size
@@ -197,8 +128,6 @@ def dev_test_step(session, data_set, model, batch_size, max_decoder_steps, versi
 	valid_one_batch = padding_batch(data_set, div, batch_size, mode='test')
 	losses = []
 	decoder_losses = []
-	seq2seq_predicts = []
-	seq2seq_y_true = []
 	for _ in range(batch_num):
 		feed_dict, decoder_output_x_batch = one_step(session, valid_one_batch, model, version, max_decoder_steps,
 		                                             dropout_keep_prob, train=False)
@@ -208,40 +137,9 @@ def dev_test_step(session, data_set, model, batch_size, max_decoder_steps, versi
 		
 		losses.append(loss)
 		decoder_losses.append(decoder_loss)
-		seq2seq_predicts.extend(batch_seq2seq_predict.tolist())
-		seq2seq_y_true.extend(decoder_output_x_batch.tolist())
-	
-	bleu_scores1, bleu_scores2, bleu_scores3, bleu_scores4, bleu_scores_2, bleu_scores_3, bleu_scores_4, \
-	rouge1, rouge2, rouge3, rougel = evaluation(seq2seq_predicts, seq2seq_y_true, mode='test')
 	
 	mean_loss = np.mean(losses)
 	mean_decoder_loss = np.mean(decoder_losses)
-	
-	bleu_score1 = np.mean(bleu_scores1) * 100
-	bleu_score2 = np.mean(bleu_scores2) * 100
-	bleu_score3 = np.mean(bleu_scores3) * 100
-	bleu_score4 = np.mean(bleu_scores4) * 100
-	bleu_score_2 = np.mean(bleu_scores_2) * 100
-	bleu_score_3 = np.mean(bleu_scores_3) * 100
-	bleu_score_4 = np.mean(bleu_scores_4) * 100
-	
-	rouge1 = np.mean(rouge1) * 100
-	rouge2 = np.mean(rouge2) * 100
-	rouge3 = np.mean(rouge3) * 100
-	rougel = np.mean(rougel) * 100
-	
-	logging.info(
-		"bleu_score4 {:g}, rouge1 {:g}, rouge2 {:g}, rouge3 {:g}, rougel {:g}, bleu_score1 {:g}, bleu_score2 {:g}, bleu_score3 {:g}, bleu_score_2 {:g}, bleu_score_3 {:g}, bleu_score_4 {:g}".format(
-			bleu_score4, rouge1, rouge2, rouge3, rougel, bleu_score1,
-			bleu_score2, bleu_score3,
-			bleu_score_2, bleu_score_3, bleu_score_4))
-	
-	print(
-		"num_samples {}, loss {:g}, decoder_loss {:g},\nbleu_score4 {:g}, rouge1 {:g}, rouge2 {:g}, rouge3 {:g}, rougel {:g}, bleu_score1 {:g}, bleu_score2 {:g}, bleu_score3 {:g}, bleu_score_2 {:g}, bleu_score_3 {:g}, bleu_score_4 {:g} ".format(
-			num_samples, mean_loss, mean_decoder_loss,
-			bleu_score4, rouge1, rouge2, rouge3, rougel, bleu_score1,
-			bleu_score2, bleu_score3,
-			bleu_score_2, bleu_score_3, bleu_score_4))
 	
 	return mean_loss, mean_decoder_loss
 
